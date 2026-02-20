@@ -1,0 +1,71 @@
+# auto-dev-agent 設定ファイル
+# ここを編集するだけで動作を変えられる
+
+# ----------------------------
+# Gemini モデル設定
+# 上から順に優先順位が高い。
+# 起動時に1回だけ使えないモデルを除外し、
+# 以降はクールダウン方式で上位モデルへ自動復帰する。
+# ----------------------------
+models:
+  # --- Gemini 3 系（最新・最高性能）---
+  - name: "gemini-3.1-pro-preview"   # 2026-02 最新。高度な推論・エージェント特化
+    rpm_limit: 10
+    daily_limit: 50
+
+  - name: "gemini-3-pro-preview"     # Gemini 3 Pro 初代。3.1より安定
+    rpm_limit: 10
+    daily_limit: 50
+
+  # --- Gemini 2.5 系（安定・無料枠あり）---
+  - name: "gemini-2.5-pro"           # 安定版。無料枠あり
+    rpm_limit: 5
+    daily_limit: 25
+
+  # --- Gemma（オープンモデル・無料枠多め）---
+  - name: "gemma-3-27b-it"           # Gemma 3 最大サイズ。無料枠が最も多い
+    rpm_limit: 30
+    daily_limit: 14400
+
+# レート制限検知時の待機秒数（スイッチ前の短い待機）
+model_switch_wait: 5
+
+# 全モデル枯渇時の待機秒数（ほぼ起きないが保険）
+all_models_exhausted_wait: 30
+
+# JSONパース失敗時のリトライ回数
+json_max_retries: 2
+
+agent:
+  max_retries: 3
+  # レート制限を受けたモデルのクールダウン時間（秒）
+  # この時間が経過すると自動的に上位モデルへ復帰を試みる
+  rate_cooldown_seconds: 60
+
+evaluation:
+  use_playwright: true
+  test_timeout_seconds: 10        # Playwrightのタイムアウト（秒）
+  max_retries: 3
+
+iteration:
+  interval_seconds: 0              # 0=即時連続実行（推奨）。待機したい場合のみ設定
+  max_iterations: 100             # デフォルト100回。0=無制限
+  push_every: 10                # N回ごとにGitHubへpush
+  max_minutes: 0                  # 0=無制限。時間で止めたい場合に設定
+  snapshot_keep: 20             # スナップショット保持数
+  stop_after_consecutive_passes: 0       # 0=無効
+  stop_after_no_change_iterations: 0     # 0=無効
+
+github:
+  auto_create_repo: false
+  auto_login_with_gh: true
+  gh_login_web: true
+  default_visibility: public
+  push_on_start: false
+
+logging:
+  eval_log_max_chars: 2000
+  show_thought: true
+  thought_preview_chars: 150
+  prompt_workspace_file_limit: 20
+  prompt_workspace_chars_per_file: 3000
