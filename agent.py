@@ -110,12 +110,8 @@ class Agent:
         return self.model_name
 
     def _mark_rate_limited(self, model_name: str):
-        """レート制限を記録し、次の上位モデルへ切り替える。"""
-        until = time.time() + self.rate_cooldown_sec
-        self._cooldown_until[model_name] = until
-        until_str = datetime.fromtimestamp(until).strftime("%H:%M:%S")
-        print(f"[agent] {model_name} をクールダウン登録（{until_str} まで）")
-        self.model_name = self._pick_best_model_name()
+        """レート制限を記録し、次の上位モデルへ切り替える（デフォルト秒数）。"""
+        self._mark_rate_limited_with_wait(model_name, float(self.rate_cooldown_sec))
 
     def refresh_model(self):
         """イテレーション開始時に呼ぶ。クールダウン解除済みの上位モデルがあれば復帰。"""
@@ -134,12 +130,29 @@ class Agent:
     # API 呼び出し
     # ------------------------------------------------------------------
 
-    def ask(self, prompt: str, role: str = "general") -> str:
-        """Geminiにプロンプトを投げてテキストを返す。"""
-        _ = role
-        last_error = None
+    def _parse_retry_delay(self, e: Exception) -> float:
+        """APIエラーから推奨待機秒数を取り出す。なければ switch_wait を返す。"""
+        import re as _re
+        # "Please retry in 25.26s" / "retryDelay: '25s'" 形式を探す
+        m = _re.search(r"retry[^0-9]*?(\d+(?:\.\d+)?)\s*s", str(e), _re.IGNORECASE)
+        if m:
+            return float(m.group(1)) + 2  # 少し余裕を持つ
+        return float(self.switch_wait)
 
-        for attempt in range(self.max_retries):
+    def _mark_rate_limited_with_wait(self, model_name: str, wait_sec: float):
+        """指定秒数でクールダウン登録して次の上位モデルへ切り替える。"""
+        until = time.time() + wait_sec
+        self._cooldown_until[model_name] = until
+        until_str = datetime.fromtimestamp(until).strftime("%H:%M:%S")
+        print(f"[agent] {model_name} クールダウン登録（{until_str} まで / {wait_sec:.0f}秒）")
+        self.model_name = self._pick_best_model_name()
+
+    def ask(self, prompt: str, role: str = "general") -> str:
+        """Geminiにプロンプトを投げてテキストを返す。レート制限は無限リトライ。"""
+        _ = role
+        non_rate_attempts = 0
+
+        while True:
             current_name = self._current_model_name()
             try:
                 response = self.client.models.generate_content(
@@ -151,29 +164,29 @@ class Agent:
                 raise ValueError("レスポンスのテキストが空でした")
 
             except Exception as e:
-                last_error = e
                 err_str = str(e).lower()
 
                 if "quota" in err_str or "rate" in err_str or "429" in err_str or "exhausted" in err_str:
-                    print(f"[agent] レート制限/クォータ検知: {current_name}")
-                    time.sleep(self.switch_wait)
-                    self._mark_rate_limited(current_name)
+                    # APIが推奨する待機時間を使う（"retry in 25s" などを解析）
+                    wait = self._parse_retry_delay(e)
+                    print(f"[agent] レート制限検知: {current_name}。{wait:.0f}秒クールダウン登録")
+                    self._mark_rate_limited_with_wait(current_name, wait)
+                    non_rate_attempts = 0  # レート制限はモデル変えれば続けられるのでリセット
 
                 elif "not found" in err_str or "404" in err_str or "is not supported" in err_str:
                     print(f"[agent] モデル利用不可: {current_name}。永続スキップします")
                     self._cooldown_until[current_name] = time.time() + 86400 * 365
                     self.model_name = self._pick_best_model_name()
 
-                elif attempt < self.max_retries - 1:
-                    wait = 5 * (attempt + 1)
-                    print(f"[agent] エラー ({e})。{wait}秒後リトライ...")
-                    time.sleep(wait)
-
                 else:
-                    print(f"[agent] リトライ上限に達しました: {e}")
-                    raise RuntimeError(f"API呼び出しに失敗しました。最後のエラー: {last_error}")
-
-        raise RuntimeError(f"有効なレスポンスを取得できませんでした。最後のエラー: {last_error}")
+                    non_rate_attempts += 1
+                    if non_rate_attempts < self.max_retries:
+                        wait = 5 * non_rate_attempts
+                        print(f"[agent] エラー ({e})。{wait}秒後リトライ...")
+                        time.sleep(wait)
+                    else:
+                        print(f"[agent] リトライ上限に達しました: {e}")
+                        raise
 
     def ask_json(self, prompt: str, role: str = "general") -> dict:
         """JSONオブジェクトを期待するask。"""
