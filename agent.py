@@ -1,4 +1,4 @@
-"""Gemini APIラッパー。起動時チェック + クールダウン方式のモデル自動復帰付き。"""
+"""Gemini APIラッパー。起動時チェック + クールダウン方式のモデル自動復帰付き（google-genai対応版）。"""
 
 import json
 import os
@@ -28,7 +28,7 @@ class Agent:
         if not api_key:
             raise ValueError(".env に GEMINI_API_KEY が設定されていません")
         
-        # 新SDK (google-genai) での初期化
+        # 新しいSDKのクライアント初期化
         self.client = genai.Client(api_key=api_key)
 
         self.config = load_config()
@@ -42,7 +42,7 @@ class Agent:
         self.rate_cooldown_sec = agent_cfg.get("rate_cooldown_seconds", 60)
 
         # ① 起動時に1回だけ使えるモデルをフィルタリング
-        raw_models = self.config
+        raw_models = self.config.get("models",[])
         self.models: list = self._filter_supported_models(raw_models)
         if not self.models:
             raise RuntimeError("使用可能なモデルがありません。APIキーとモデル設定を確認してください。")
@@ -53,7 +53,7 @@ class Agent:
         model_names = " > ".join(m for m in self.models)
         print(f" 利用可能モデル（優先順）: {model_names}")
 
-        self.model_name = self._pick_best_model()
+        self.model_name = self._pick_best_model_name()
 
     # ------------------------------------------------------------------
     # 起動時チェック（1回だけ）
@@ -62,6 +62,7 @@ class Agent:
     def _list_available_generate_models(self) -> set:
         available = set()
         try:
+            # genai SDKでのモデル一覧取得
             for m in self.client.models.list():
                 name = m.name
                 if name.startswith("models/"):
@@ -89,7 +90,7 @@ class Agent:
     # イテレーションごとのモデル選択（クールダウン考慮）
     # ------------------------------------------------------------------
 
-    def _pick_best_model(self) -> str:
+    def _pick_best_model_name(self) -> str:
         """クールダウン中でない最上位モデル名を返す。全滅なら最短クールダウン解除まで待つ。"""
         now = time.time()
 
@@ -117,7 +118,7 @@ class Agent:
         self._cooldown_until = until
         until_str = datetime.fromtimestamp(until).strftime("%H:%M:%S")
         print(f" {model_name} をクールダウン登録（{until_str} まで）")
-        self.model_name = self._pick_best_model()
+        self.model_name = self._pick_best_model_name()
 
     def refresh_model(self):
         """イテレーション開始時に呼ぶ。クールダウン解除済みの上位モデルがあれば復帰。"""
@@ -140,7 +141,7 @@ class Agent:
         """Geminiにプロンプトを投げてテキストを返す。"""
         _ = role
         last_error = None
-
+        
         for attempt in range(self.max_retries):
             current_name = self._current_model_name()
             try:
@@ -150,15 +151,14 @@ class Agent:
                 )
                 if response.text:
                     return response.text
-                
-                raise ValueError("APIからのレスポンスが空でした")
+                raise ValueError("レスポンスのテキストが空でした")
 
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
 
                 if "quota" in err_str or "rate" in err_str or "429" in err_str or "exhausted" in err_str:
-                    print(f" レート制限検知: {current_name}")
+                    print(f" レート制限/クォータ検知: {current_name}")
                     time.sleep(self.switch_wait)
                     self._mark_rate_limited(current_name)
                     # attempt はリセットせず継続（次のモデルで再試行）
@@ -167,7 +167,7 @@ class Agent:
                     print(f" モデル利用不可: {current_name}。永続スキップします")
                     # 実質的に永久にクールダウン
                     self._cooldown_until = time.time() + 86400 * 365
-                    self.model_name = self._pick_best_model()
+                    self.model_name = self._pick_best_model_name()
 
                 elif attempt < self.max_retries - 1:
                     wait = 5 * (attempt + 1)
@@ -176,9 +176,9 @@ class Agent:
 
                 else:
                     print(f" リトライ上限に達しました: {e}")
-                    raise RuntimeError(f"APIリトライ上限に達しました。最後のエラー: {last_error}")
-        
-        # forループを抜けきってしまった場合のフェイルセーフ
+                    raise RuntimeError(f"API呼び出しの限界に達しました。最後のエラー: {last_error}")
+
+        # 万が一ループを抜けてしまった時のフェイルセーフ
         raise RuntimeError(f"有効なレスポンスを取得できませんでした。最後のエラー: {last_error}")
 
     def ask_json(self, prompt: str, role: str = "general") -> dict:
