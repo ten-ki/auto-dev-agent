@@ -105,12 +105,21 @@ class Orchestrator:
         if self._playwright_runtime_ready():
             print("[orchestrator] Playwright 実行環境: 準備済み")
             return
+
         print("[orchestrator] Playwright が未準備です。インストールします...")
-        self._run_setup_cmd([sys.executable, "-m", "pip", "install", "playwright"])
-        self._run_setup_cmd([sys.executable, "-m", "playwright", "install", "chromium"])
-        if not self._playwright_runtime_ready():
-            raise RuntimeError("Playwright のセットアップに失敗しました")
-        print("[orchestrator] Playwright セットアップ完了")
+        try:
+            self._run_setup_cmd([sys.executable, "-m", "pip", "install", "playwright", "-q"])
+            # --with-deps: Colab/Linux環境でシステム依存ライブラリも一緒に入れる
+            self._run_setup_cmd([sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"])
+        except Exception as e:
+            print(f"[orchestrator] Playwright インストール失敗: {e}")
+            print("[orchestrator] 静的チェックのみで続行します（Playwrightなし）")
+            return
+
+        if self._playwright_runtime_ready():
+            print("[orchestrator] Playwright セットアップ完了")
+        else:
+            print("[orchestrator] Playwright セットアップ失敗。静的チェックのみで続行します")
 
     # ------------------------------------------------------------------
     # コンテキスト生成

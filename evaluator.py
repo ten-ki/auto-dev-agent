@@ -54,7 +54,26 @@ class Evaluator:
             self._browser = self._pw.chromium.launch(headless=True)
             print("[evaluator] Playwright ブラウザ起動（使い回しモード）")
         except Exception as e:
-            print(f"[evaluator] Playwright 利用不可: {e}。静的チェックのみ実行します")
+            print(f"[evaluator] Playwright 利用不可: {e}")
+            self._pw = self._browser = None
+            # 自動インストールを試みる
+            self._try_install_playwright()
+
+    def _try_install_playwright(self):
+        """chromium バイナリがない場合に自動インストールを試みる。"""
+        import subprocess as _sp
+        print("[evaluator] chromium を自動インストールします...")
+        try:
+            _sp.run(
+                [__import__("sys").executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+                check=True, capture_output=True,
+            )
+            from playwright.sync_api import sync_playwright
+            self._pw      = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(headless=True)
+            print("[evaluator] Playwright ブラウザ起動完了（自動インストール後）")
+        except Exception as e2:
+            print(f"[evaluator] 自動インストール失敗: {e2}。静的チェックのみで続行します")
             self._pw = self._browser = None
 
     def close(self):
