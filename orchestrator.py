@@ -44,6 +44,9 @@ class Orchestrator:
         self.max_minutes     = max_minutes    if max_minutes    > 0 else iter_cfg.get("max_minutes", 0)
         self.stop_after_consecutive_passes      = iter_cfg.get("stop_after_consecutive_passes", 0)
         self.stop_after_no_change_iterations    = iter_cfg.get("stop_after_no_change_iterations", 0)
+        self.evo_boost_no_fail_iterations       = iter_cfg.get("evolution_boost_no_fail_iterations", 8)
+        self.evo_boost_stagnation_iterations    = iter_cfg.get("evolution_boost_stagnation_iterations", 3)
+        self.evo_boost_cooldown_iterations      = iter_cfg.get("evolution_boost_cooldown_iterations", 4)
 
         # インターバル（-1はconfig値を使う、config値が0以下なら即時）
         cfg_interval   = iter_cfg.get("interval_seconds", 0)  # 0=即時連続
@@ -61,6 +64,8 @@ class Orchestrator:
 
         self.consecutive_passes  = 0
         self.no_change_streak    = 0
+        self.last_fail_iteration = 0
+        self.last_boost_iteration = -999999
 
         self.agent    = Agent()
         self.executor = Executor(self.workspace)
@@ -348,6 +353,31 @@ JSONスキーマ:
         )
         return impl_result, eval_result
 
+    def _build_evolution_boost_feedback(self) -> str:
+        return (
+            "最近はエラーが出ておらず、変更の伸びが停滞しています。"
+            "次の1回は安定性を維持しつつ、進化幅を意図的に大きくしてください。"
+            "小さな修正だけで終わらせず、機能追加・UI改善・構造改善のいずれかを必ず含めてください。"
+        )
+
+    def _should_boost_evolution(self) -> tuple:
+        no_fail_for = self.iteration - self.last_fail_iteration
+        cooldown_ok = (self.iteration - self.last_boost_iteration) >= self.evo_boost_cooldown_iterations
+        ready = (
+            self.evo_boost_no_fail_iterations > 0
+            and self.evo_boost_stagnation_iterations > 0
+            and no_fail_for >= self.evo_boost_no_fail_iterations
+            and self.no_change_streak >= self.evo_boost_stagnation_iterations
+            and cooldown_ok
+        )
+        if not ready:
+            return False, ""
+        return (
+            True,
+            f"no_fail={no_fail_for}, no_change={self.no_change_streak}, "
+            f"cooldown={self.iteration - self.last_boost_iteration}",
+        )
+
     def _run_iteration(self):
         self.iteration += 1
         elapsed = datetime.now() - self.started_at
@@ -361,7 +391,14 @@ JSONスキーマ:
 
         pre_snapshot = self._take_snapshot("pre")
 
-        impl_result, eval_result = self._run_single_attempt()
+        boost_feedback = ""
+        should_boost, boost_reason = self._should_boost_evolution()
+        if should_boost:
+            boost_feedback = self._build_evolution_boost_feedback()
+            self.last_boost_iteration = self.iteration
+            print(f"[orchestrator] evolution boost applied: {boost_reason}")
+
+        impl_result, eval_result = self._run_single_attempt(feedback=boost_feedback)
 
         if not eval_result.get("passed"):
             reason = eval_result.get("reason", "不明なエラー")
@@ -389,6 +426,7 @@ JSONスキーマ:
             print(f"[orchestrator] ❌ FAIL (リトライ後も失敗): {reason}")
             self._rollback(pre_snapshot)
             self.consecutive_passes = 0
+            self.last_fail_iteration = self.iteration
             self._take_snapshot("post-fail")
             self._append_eval_log(
                 impl_result.get("action_type", ""),

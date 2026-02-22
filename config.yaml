@@ -55,6 +55,11 @@ iteration:
   snapshot_keep: 20             # スナップショット保持数
   stop_after_consecutive_passes: 0       # 0=無効
   stop_after_no_change_iterations: 0     # 0=無効
+  # Promote exploration when stable-but-stagnant:
+  # trigger when no FAIL for N iterations and no-change streak reaches M.
+  evolution_boost_no_fail_iterations: 8
+  evolution_boost_stagnation_iterations: 3
+  evolution_boost_cooldown_iterations: 4
 
 github:
   auto_create_repo: false
